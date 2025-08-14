@@ -2,8 +2,13 @@ import streamlit as st
 import time
 import random
 import re
+from langchain_community.chat_models import ChatOllama
+from langchain_core.prompts import ChatPromptTemplate
 from buyer_bot import BuyerAgent  # Keep your BuyerAgent file
-# SellerAgent merged directly from your file
+
+# -------------------------
+# Seller Agent with LLaMA
+# -------------------------
 class SellerAgent:
     def __init__(self, name, personality_type, cost_price):
         self.name = name
@@ -12,6 +17,7 @@ class SellerAgent:
         self.round = 0
         self.latest_buyer_offer = None
         self.last_offer = None
+        self.llm = ChatOllama(model="llama3.1:8b", temperature=0.6)
 
     def observe_buyer(self, message: str):
         matches = re.findall(r"\d+\.?\d*", message.replace(',', ''))
@@ -49,37 +55,28 @@ class SellerAgent:
             offer = seller_low
 
         offer = max(offer, seller_low)
-
-        if self.latest_buyer_offer and seller_low <= self.latest_buyer_offer <= seller_high:
-            return {"action": "accept", "offer": self.latest_buyer_offer,
-                    "message": f"I accept your offer of ₹{self.latest_buyer_offer:.2f}."}
-
         self.last_offer = offer
-        return {"action": "counter", "offer": offer,
-                "message": f"My offer is ₹{offer:.2f}."}
+
+        # Auto-accept if buyer offer is acceptable
+        if self.latest_buyer_offer and seller_low <= self.latest_buyer_offer <= seller_high:
+            prompt = f"You are a {self.personality_type} Seller. Buyer offered ₹{self.latest_buyer_offer}. Accept politely in 1-2 sentences."
+            chat_prompt = ChatPromptTemplate.from_template(prompt)
+            formatted_messages = chat_prompt.format_messages()
+            message = self.llm.invoke(formatted_messages).content
+            return {"action": "accept", "offer": self.latest_buyer_offer, "message": message}
+
+        # Otherwise generate counter-offer message
+        prompt = f"You are a {self.personality_type} Seller. Buyer offered ₹{self.latest_buyer_offer or 0}. You counter with ₹{offer}. Respond naturally in 1-2 sentences."
+        chat_prompt = ChatPromptTemplate.from_template(prompt)
+        formatted_messages = chat_prompt.format_messages()
+        message = self.llm.invoke(formatted_messages).content
+
+        return {"action": "counter", "offer": offer, "message": message}
 
 
-# =========================
-# Buyer/Seller Personas
-# =========================
-BUYER_PERSONAS = {
-    "Aggressive Trader": {
-        "openers": ["Alright, listen. What’s your rock-bottom price for {product}?"],
-        "counter": ["Too high. How about ₹{}?"],
-        "accepts": ["Fine. Done."],
-        "walks": ["Forget it, I’m out."]
-    },
-    "Diplomatic Buyer": {
-        "openers": ["Hi! I’m interested in {product}, let’s find a fair price."],
-        "counter": ["Would you consider ₹{}?"],
-        "accepts": ["Deal!"],
-        "walks": ["Maybe another time."]
-    }
-}
-
-# =========================
+# -------------------------
 # Typing Effect
-# =========================
+# -------------------------
 def type_message(message, delay=0.02):
     placeholder = st.empty()
     text = ""
@@ -89,37 +86,43 @@ def type_message(message, delay=0.02):
         time.sleep(delay)
     return placeholder
 
-# =========================
+
+# -------------------------
 # Turn Handlers
-# =========================
+# -------------------------
 def buyer_turn(round_num, buyer, buyer_personality, product, market_price, seller_message):
     buyer.observe_seller(seller_message)
     decision = buyer.decide(market_price)
-    persona = BUYER_PERSONAS[buyer_personality]
 
-    if round_num == 1:
-        message = random.choice(persona["openers"]).format(product=product, market_price=market_price)
-    elif decision['action'] == "accept":
-        message = random.choice(persona["accepts"])
+    if decision['action'] == "accept":
+        prompt = f"You are a {buyer_personality} Buyer. Accept seller's offer of ₹{buyer.latest_seller_offer}. Respond politely."
     elif decision['action'] == "walk_away":
-        message = random.choice(persona["walks"])
+        prompt = f"You are a {buyer_personality} Buyer. You decide to walk away from the deal. Respond politely."
     else:
-        message = random.choice(persona["counter"]).format(decision['offer'])
+        prompt = f"You are a {buyer_personality} Buyer. Seller offered ₹{buyer.latest_seller_offer or 0}. Counter with ₹{decision['offer']} naturally."
+
+    chat_prompt = ChatPromptTemplate.from_template(prompt)
+    formatted_messages = chat_prompt.format_messages()
+    message = buyer.llm.invoke(formatted_messages).content
+
     return decision, message
+
 
 def seller_turn(seller, buyer_message):
     seller.observe_buyer(buyer_message)
     decision = seller.decide()
     return decision, decision['message']
 
-# =========================
-# Negotiation in Streamlit
-# =========================
+
+# -------------------------
+# Main Negotiation Loop
+# -------------------------
 def run_negotiation_streamlit(product, market_price, buyer_name, buyer_personality, buyer_budget,
                               seller_name, seller_personality, seller_min_price,
                               typing_delay=0.02, round_pause=1):
 
     buyer = BuyerAgent(buyer_name, buyer_personality, buyer_budget)
+    buyer.llm = ChatOllama(model="llama3.1:8b", temperature=0.6)
     seller = SellerAgent(seller_name, seller_personality, seller_min_price)
 
     st.session_state.history = []
@@ -129,14 +132,14 @@ def run_negotiation_streamlit(product, market_price, buyer_name, buyer_personali
         st.markdown(f"### Round {round_num}")
         time.sleep(round_pause)
 
-        # BUYER TURN
+        # Buyer Turn
         buyer_decision, buyer_message = buyer_turn(round_num, buyer, buyer_personality, product, market_price, seller_message)
         type_message(f"**{buyer_name} ({buyer_personality})**: {buyer_message}", delay=typing_delay)
         if buyer_decision['action'] == "accept":
             st.success("✅ Deal closed successfully!")
             break
 
-        # SELLER TURN
+        # Seller Turn
         time.sleep(round_pause)
         seller_decision, seller_message = seller_turn(seller, buyer_message)
         type_message(f"**{seller_name} ({seller_personality})**: {seller_message}", delay=typing_delay)
@@ -164,22 +167,23 @@ def run_negotiation_streamlit(product, market_price, buyer_name, buyer_personali
                 f"Action: {turn['seller_action']} | Offer: ₹{turn['seller_offer']:.0f}"
             )
 
-# =========================
+
+# -------------------------
 # Streamlit UI
-# =========================
-st.title("🤝 Live Negotiation Simulator")
+# -------------------------
+st.title("🤝 AI Negotiation Simulator with LLaMA 3.1:8b")
 
 with st.form("negotiation_form"):
-    product = st.text_input("Product Name","ENTER THE PRODUCT")
-    market_price = st.number_input("Market Price (₹)")
+    product = st.text_input("Product Name", "ENTER THE PRODUCT")
+    market_price = st.number_input("Market Price (₹)", min_value=1000, max_value=100000, value=15000)
 
-    buyer_name = st.text_input("Buyer Name","ENTER")
-    buyer_personality = st.selectbox("Buyer Personality", list(BUYER_PERSONAS.keys()))
-    buyer_budget = st.number_input("Buyer Budget (₹)")
+    buyer_name = st.text_input("Buyer Name", "ENTER")
+    buyer_personality = st.selectbox("Buyer Personality", ["Aggressive Trader", "Diplomatic Buyer", "Data-Driven Analyst", "Creative Wildcard"])
+    buyer_budget = st.number_input("Buyer Budget (₹)", min_value=1000, max_value=100000, value=16000)
 
-    seller_name = st.text_input("Seller Name","ENTER")
-    seller_personality = st.selectbox("Seller Personality", ["Aggressive Trader", "Diplomatic Seller", "Data-Driven Seller", "Custom"])
-    seller_min_price = st.number_input("Seller Minimum Price (₹)")
+    seller_name = st.text_input("Seller Name", "ENTER")
+    seller_personality = st.selectbox("Seller Personality", ["Aggressive Trader", "Diplomatic Seller", "Data-Driven Seller", "Creative Wildcard"])
+    seller_min_price = st.number_input("Seller Minimum Price (₹)", min_value=1000, max_value=100000, value=14000)
 
     submitted = st.form_submit_button("Start Negotiation")
 
