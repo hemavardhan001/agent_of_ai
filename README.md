@@ -1,6 +1,6 @@
 # Agent of AI 🤖💼
 
-**Agent of AI** is a Python-based framework designed to simulate negotiations between autonomous agents, leveraging AI to model buyer-seller interactions in a realistic environment. This project demonstrates AI-driven decision-making, negotiation strategies, and interactive visualization using Streamlit.
+**Agent of AI** is a Python-based framework designed to simulate negotiations between autonomous agents, leveraging AI to model buyer-seller interactions in a realistic environment. This project demonstrates AI-driven decision-making, negotiation strategies, and interactive visualization using .
 
 ---
 
