@@ -1,114 +1,77 @@
 import time
 import random
+import subprocess
 from buyer_bot import BuyerAgent
 from seller_bot import SellerAgent
 
-# Your existing BUYER_PERSONAS and SELLER_PERSONAS dictionaries here (copy exactly)
-BUYER_PERSONAS = {
-    "Aggressive Trader": {
-        "openers": [
-            "Alright, listen. I don’t have time to waste—what’s your rock-bottom price for {product}?",
-            "Skip the small talk—how much for {product}?"
-        ],
-        "counter": [
-            "Too high. Knock at least ₹{} off and maybe we’ll talk.",
-            "You’re not serious with that price—how about ₹{}?"
-        ],
-        "accepts": ["Fine. Done.", "Alright, you’ve got a deal."],
-        "walks": ["Forget it, I’m out.", "Not worth my time."]
-    },
-    "Diplomatic Buyer": {
-        "openers": [
-            "Hi! I’m really interested in {product}, and I hope we can agree on something fair.",
-            "Hello there, I’ve had my eye on {product} for a while."
-        ],
-        "counter": [
-            "I understand your position, but would you consider ₹{}?",
-            "I think we can both be happy at ₹{}."
-        ],
-        "accepts": ["That works for me. Deal!", "Perfect, let’s do it."],
-        "walks": ["I appreciate your time, but I’ll have to pass.", "Maybe another time."]
-    },
-    "Data-Driven Analyst": {
-        "openers": [
-            "Based on my market checks, {product} usually sells for around ₹{market_price}.",
-            "I’ve reviewed the trends, and ₹{market_price} is the standard rate for {product}."
-        ],
-        "counter": [
-            "Statistically, ₹{} is a fair midpoint.",
-            "Given current demand, ₹{} makes more sense."
-        ],
-        "accepts": ["The math checks out. Deal.", "Data aligns, I’m in."],
-        "walks": ["Numbers don’t fit, so I’ll pass.", "Not in my target range."]
-    },
-    "Creative Wildcard": {
-        "openers": [
-            "Imagine if {product} was the crown jewel of my collection—what would be your magical price?",
-            "I dreamed about {product} last night—it told me it’s worth ₹{market_price}!"
-        ],
-        "counter": [
-            "What if we meet at ₹{}—I’ll throw in good vibes for free.",
-            "₹{} feels like destiny to me."
-        ],
-        "accepts": ["That’s poetic enough for me. Deal!", "We’ve painted the perfect picture—done."],
-        "walks": ["The stars don’t align today.", "Not feeling it anymore."]
-    }
-}
+# =========================
+# Existing BUYER_PERSONAS and SELLER_PERSONAS (kept for context)
+BUYER_PERSONAS = { ... }  # Copy your existing dictionary
+SELLER_PERSONAS = { ... }  # Copy your existing dictionary
 
-SELLER_PERSONAS = {
-    "Aggressive Trader": [
-        "Price is firm. ₹{}—take it or leave it.",
-        "Someone else will take it for ₹{}, don’t waste time."
-    ],
-    "Diplomatic Seller": [
-        "I understand, but how about ₹{}?",
-        "Let’s try to meet halfway—₹{}."
-    ],
-    "Data-Driven Seller": [
-        "Market data says ₹{} is already competitive.",
-        "Based on supply and demand, I can do ₹{}."
-    ],
-    "Creative Wildcard": [
-        "₹{}—and I’ll wrap it in gold paper for you.",
-        "₹{} feels like fate."
-    ]
-}
+# =========================
+# LLaMA Helper
+def call_llama(prompt):
+    """
+    Calls LLaMA 3.1:8b via ollama CLI and returns the generated text.
+    """
+    process = subprocess.Popen(
+        ['ollama', 'run', 'llama3:8b'],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+    stdout, stderr = process.communicate(prompt)
+    if stderr:
+        print("LLaMA error:", stderr)
+    return stdout.strip()
 
+# =========================
+# Buyer/Seller Turns with LLaMA integration
 def buyer_turn(round_num, buyer, buyer_personality, product, market_price, seller_message):
     buyer.observe_seller(seller_message)
     decision = buyer.decide(market_price)
-    persona = BUYER_PERSONAS[buyer_personality]
 
     if round_num == 1:
-        message = random.choice(persona["openers"]).format(product=product, market_price=market_price)
-    elif decision['action'] == "accept":
-        message = random.choice(persona["accepts"])
-    elif decision['action'] == "walk_away":
-        message = random.choice(persona["walks"])
+        context = f"Buyer ({buyer_personality}) wants to start negotiation for {product} at market price ₹{market_price}."
     else:
-        message = random.choice(persona["counter"]).format(decision['offer'])
+        context = f"Buyer ({buyer_personality}) reacting to seller: '{seller_message}'"
 
-    return decision, message
+    # Compose prompt for LLaMA
+    prompt = f"{context}\nBuyer budget: ₹{buyer.budget}\nWhat should the buyer say or offer next?"
+    message = call_llama(prompt)
 
+    # Keep numeric offer for logic
+    if decision['action'] in ["accept", "walk_away"]:
+        offer = decision['offer']
+    else:
+        # Try to extract number from LLaMA output
+        import re
+        numbers = re.findall(r"\d+\.?\d*", message.replace(',', ''))
+        offer = float(numbers[0]) if numbers else decision['offer']
+
+    return {**decision, "offer": offer}, message
 
 def seller_turn(seller, seller_personality, market_price, buyer_message):
     seller.observe_buyer(buyer_message)
     decision = seller.decide()
-    persona = SELLER_PERSONAS[seller_personality]
 
-    if decision['action'] == "accept":
-        message = "We have a deal!"
-    elif decision['action'] == "walk_away":
-        message = "I can’t go lower—good luck."
-    else:
-        message = random.choice(persona).format(decision['offer'])
+    context = f"Seller ({seller_personality}) reacting to buyer: '{buyer_message}'\nSeller minimum price: ₹{seller.cost_price}"
+    prompt = f"{context}\nWhat should the seller say or offer next?"
+    message = call_llama(prompt)
 
-    return decision, message
+    # Keep numeric offer for logic
+    import re
+    numbers = re.findall(r"\d+\.?\d*", message.replace(',', ''))
+    offer = float(numbers[0]) if numbers else decision['offer']
 
+    return {**decision, "offer": offer}, message
 
+# =========================
+# Main Negotiation Loop
 def run_negotiation(product, market_price, buyer_name, buyer_personality, buyer_budget,
                     seller_name, seller_personality, seller_min_price):
-
     buyer = BuyerAgent(buyer_name, buyer_personality, buyer_budget)
     seller = SellerAgent(seller_name, seller_personality, seller_min_price)
 
@@ -116,37 +79,35 @@ def run_negotiation(product, market_price, buyer_name, buyer_personality, buyer_
 
     for round_num in range(1, 11):
         # BUYER TURN
-        time.sleep(random.uniform(3, 6))  # realistic typing delay
-        buyer_decision, buyer_message = buyer_turn(
-            round_num, buyer, buyer_personality, product, market_price, seller_message
-        )
+        time.sleep(random.uniform(3, 6))
+        buyer_decision, buyer_message = buyer_turn(round_num, buyer, buyer_personality, product, market_price, seller_message)
         print(f"{buyer_name} ({buyer_personality}): {buyer_message}")
         if buyer_decision['action'] in ["accept", "walk_away"]:
             print(f"Negotiation ended: {buyer_decision['action'].replace('_', ' ').title()}")
             break
 
         # SELLER TURN
-        time.sleep(random.uniform(3, 6))  # realistic typing delay
-        seller_decision, seller_message = seller_turn(
-            seller, seller_personality, market_price, buyer_message
-        )
+        time.sleep(random.uniform(3, 6))
+        seller_decision, seller_message = seller_turn(seller, seller_personality, market_price, buyer_message)
         print(f"{seller_name} ({seller_personality}): {seller_message}")
         if seller_decision['action'] in ["accept", "walk_away"]:
             print(f"Negotiation ended: {seller_decision['action'].replace('_', ' ').title()}")
             break
 
+# =========================
+# Console Input
 if __name__ == "__main__":
     product = input("Enter product name: ")
     market_price = int(input("Enter market price (₹): "))
-    
+
     buyer_name = input("Enter buyer name: ")
     buyer_personality = input("Enter buyer personality (Aggressive Trader, Diplomatic Buyer, Data-Driven Analyst, Creative Wildcard): ")
     buyer_budget = int(input("Enter buyer budget (₹): "))
-    
+
     seller_name = input("Enter seller name: ")
     seller_personality = input("Enter seller personality (Aggressive Trader, Diplomatic Seller, Data-Driven Seller, Creative Wildcard): ")
     seller_min_price = int(input("Enter seller minimum price (₹): "))
-    
+
     run_negotiation(
         product=product,
         market_price=market_price,
@@ -157,4 +118,3 @@ if __name__ == "__main__":
         seller_personality=seller_personality,
         seller_min_price=seller_min_price
     )
-
