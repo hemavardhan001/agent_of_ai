@@ -1,5 +1,7 @@
 import streamlit as st
 import re
+from langchain_community.chat_models import ChatOllama
+from langchain_core.prompts import ChatPromptTemplate
 
 # BuyerAgent class
 class BuyerAgent:
@@ -11,6 +13,8 @@ class BuyerAgent:
         self.latest_seller_offer = None
         self.last_offer = None
         self.market_price = None
+        # Initialize LLaMA 3.1:8b
+        self.llm = ChatOllama(model="llama3.1:8b", temperature=0.6)
 
     def observe_seller(self, message: str):
         matches = re.findall(r"\d+\.?\d*", message.replace(',', ''))
@@ -70,15 +74,39 @@ class BuyerAgent:
 
         offer = max(1.0, min(offer, self.resale_price))
 
+        # ------------------- LLaMA message generation -------------------
         # Auto-accept rules
         if self.latest_seller_offer:
             if has_feasible and feasible_low <= self.latest_seller_offer <= feasible_high:
+                prompt = """
+                You are a Buyer AI negotiator with this personality: {personality}.
+                Seller offered: ₹{seller_offer}.
+                You accept this offer. Respond naturally, politely, and concisely in 1–2 sentences.
+                """
+                formatted_prompt = ChatPromptTemplate.from_template(prompt).format(
+                    personality=self.personality_type,
+                    seller_offer=self.latest_seller_offer
+                )
+                message = self.llm.invoke(formatted_prompt).content
                 return {"action": "accept", "offer": self.latest_seller_offer,
-                        "message": f"I accept your offer of ₹{self.latest_seller_offer:.2f}."}
+                        "message": message}
 
+        # Counter-offer
         self.last_offer = offer
+        prompt = """
+        You are a Buyer AI negotiator with this personality: {personality}.
+        Seller offered: ₹{seller_offer}.
+        You want to make a counteroffer of ₹{counter_offer}. Respond naturally, politely, and concisely in 1–2 sentences.
+        """
+        formatted_prompt = ChatPromptTemplate.from_template(prompt).format(
+            personality=self.personality_type,
+            seller_offer=self.latest_seller_offer or 0,
+            counter_offer=offer
+        )
+        message = self.llm.invoke(formatted_prompt).content
+
         return {"action": "counter", "offer": offer,
-                "message": f"My offer is ₹{offer:.2f}."}
+                "message": message}
 
 
 # -------------------- Streamlit UI --------------------
